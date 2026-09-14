@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use serde_json::Value;
-use transport::error::{Result, TransportError};
+use transport::error::Result;
 
 use crate::event::{CONTENT_TYPE, CloudEvent};
 use http::endpoint;
@@ -66,24 +66,21 @@ impl Client {
 }
 
 /// A 2xx answer as it is; anything else as a failure naming the status and
-/// the code the service put in the body, retryable where it says come
+/// the code the service put in the body, retryable where HTTP says come
 /// back.
 ///
 /// # Errors
 /// Where the status is not 2xx.
 pub fn judge(response: Response) -> Result<Response> {
-    if (200..300).contains(&response.status) {
-        return Ok(response);
-    }
-    let code = serde_json::from_slice::<Value>(&response.body)
+    message::judge("Event Grid", response, code, |_| false)
+}
+
+/// The code an error answer names, or nothing.
+fn code(response: &Response) -> String {
+    serde_json::from_slice::<Value>(&response.body)
         .ok()
         .and_then(|error| error["error"]["code"].as_str().map(str::to_string))
-        .unwrap_or_default();
-    let retryable = response.status >= 500 || response.status == 408 || response.status == 429;
-    Err(TransportError {
-        message: format!("Event Grid answered {} {code}", response.status),
-        retryable,
-    })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

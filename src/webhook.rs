@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use transport::error::{Result, TransportError, protocol_error};
-use transport::socket;
 
 use crate::event::{BATCH_CONTENT_TYPE, CONTENT_TYPE, CloudEvent};
 use http::endpoint;
 use http::message::{self, Request, Response};
+use http::server;
 use http::target::HttpTarget;
 
 /// What Event Grid delivered.
@@ -133,25 +133,16 @@ pub fn push(webhook_url: &str, request: Request, timeout: Option<Duration>) -> R
 /// Where the connection could not be accepted, broke, or did not carry a
 /// delivery — which is answered 400 before the error is returned.
 pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<Delivery> {
-    let (stream, _) = socket::accept_tcp(listener, timeout)?;
-    let (mut reader, mut writer) = socket::split(stream)?;
-    let request = message::read_request(&mut reader)?
-        .ok_or_else(|| protocol_error("a connection that sent no request"))?;
-    match parse(&request) {
-        Ok((delivery, response)) => {
-            message::write_response(&mut writer, &response)?;
-            Ok(delivery)
-        }
-        Err(failure) => {
-            message::write_response(&mut writer, &Response::new(400))?;
-            Err(failure)
-        }
-    }
+    server::serve_one(listener, timeout, |request| match parse(request) {
+        Ok((delivery, response)) => (Ok(delivery), response),
+        Err(failure) => (Err(failure), Response::new(400)),
+    })?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transport::socket;
 
     fn event(data: &[u8]) -> CloudEvent {
         CloudEvent {
