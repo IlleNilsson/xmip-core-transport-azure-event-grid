@@ -19,8 +19,8 @@
 //! session.rs    the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, the target parser and HTTP itself come from the http
-//! technology (ADR-0044).
+//! The endpoint, the target parser, HTTP itself and the judgement of an
+//! answer come from the http technology (ADR-0044).
 //!
 //! A Stream is bytes and travels as the event's `data_base64`, so nothing
 //! is refused for its content. An event is one mebibyte at most, envelope
