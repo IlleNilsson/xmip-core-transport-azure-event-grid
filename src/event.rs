@@ -111,8 +111,7 @@ fn fresh_id() -> String {
     let count = NEXT.fetch_add(1, Ordering::Relaxed);
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |since| since.as_secs());
     format!("{secs:x}-{count:x}")
 }
 
