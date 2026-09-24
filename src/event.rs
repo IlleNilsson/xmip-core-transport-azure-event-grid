@@ -11,8 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
+use codec::base64;
 use serde_json::{Value, json};
 use transport::error::{Result, protocol_error};
 
@@ -61,7 +60,7 @@ impl CloudEvent {
             "type": self.kind,
             "source": self.source,
             "id": self.id,
-            "data_base64": STANDARD.encode(&self.data),
+            "data_base64": base64::encode(&self.data),
         })
     }
 
@@ -81,8 +80,7 @@ impl CloudEvent {
                 .ok_or_else(|| protocol_error(format!("an event with no {name}")))
         };
         let data = match (&value["data_base64"], &value["data"]) {
-            (Value::String(encoded), _) => STANDARD
-                .decode(encoded)
+            (Value::String(encoded), _) => base64::decode(encoded)
                 .map_err(|e| protocol_error(format!("data_base64 that is not base64: {e}")))?,
             (_, Value::String(text)) => text.as_bytes().to_vec(),
             (_, Value::Null) => Vec::new(),
