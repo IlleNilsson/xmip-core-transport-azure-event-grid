@@ -48,8 +48,11 @@ pub use client::{API_VERSION, Client, KEY_HEADER};
 pub use event::{CloudEvent, ENVELOPE, EVENT_CEILING};
 use http::target::HttpTarget;
 pub use session::{Event, Session};
-use transport::error::{Result, TransportError, protocol_error};
-use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+use transport::arrived::next_arrival;
+use transport::ceiling;
+use transport::error::{Result, protocol_error};
+use transport::listening::Listening;
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 pub use webhook::Delivery;
@@ -182,13 +185,7 @@ impl Transport for EventGridTransport {
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        if bytes.len() > ceiling() {
-            return Err(TransportError::permanent(format!(
-                "{} bytes is over the {} one Event Grid event carries",
-                bytes.len(),
-                ceiling()
-            )));
-        }
+        ceiling::within(bytes.len(), ceiling(), "one Event Grid event carries")?;
         let topic_url = self.resolve(target);
         self.client()
             .publish(topic_url, &CloudEvent::stream(topic_url, bytes))
@@ -207,87 +204,50 @@ impl EventGridTransport {
     }
 }
 
-/// A session listening for its one publish, and the webhook it then
-/// validates and delivers to: the far end is the topic and the
-/// subscription both, so what comes back went through the topic and
-/// arrived the way a Receive Location takes it.
-struct Serving {
-    transport: EventGridTransport,
-    session: Session,
-    listener: TcpListener,
-    address: String,
-    webhook: TcpListener,
-    webhook_address: String,
-}
-
-impl FarEnd for Serving {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(mut self: Box<Self>) -> Result<Arrived> {
-        let published = match self.session.serve_one(&self.listener)? {
-            Event::Published(event) => event,
-            Event::Refused(code) => {
-                return Err(protocol_error(format!("the session refused: {code}")));
-            }
-        };
-        let Serving {
-            transport,
-            session,
-            webhook,
-            webhook_address,
-            ..
-        } = *self;
-        let taking = std::thread::spawn(move || {
-            let mut taken = transport.accept_one(&webhook)?;
-            if taken.is_empty() {
-                taken = transport.accept_one(&webhook)?;
-            }
-            Ok::<_, TransportError>(taken)
-        });
-        let url = format!("http://{webhook_address}/hook");
-        let delivered = session
-            .validate(&url)
-            .and_then(|()| session.deliver(&url, &published));
-        if delivered.is_err() {
-            // The poke only has to be quick, because the webhook bounds its own wait. An
-            // unbounded poke under port exhaustion waited on Windows' ~21-second SYN
-            // schedule; it was bare until 2026-09-21.
-            drop(socket::connect_tcp(
-                &webhook_address,
-                Some(Duration::from_millis(250)),
-            ));
-        }
-        let taken = taking
-            .join()
-            .map_err(|_| protocol_error("the webhook's thread panicked"))?;
-        delivered?;
-        taken?
-            .into_iter()
-            .next()
-            .ok_or_else(|| protocol_error("delivered, but the webhook took nothing"))
-    }
-}
-
 impl Loopback for EventGridTransport {
     fn ceiling(&self) -> Option<usize> {
         Some(ceiling())
     }
 
-    /// The session bound at the topic URL's authority — `127.0.0.1:0` for
-    /// the loopback — and the webhook bound where this transport listens.
+    /// A session listening for its one publish, bound at the topic URL's
+    /// authority — `127.0.0.1:0` for the loopback — and the webhook it then
+    /// validates and delivers to, bound where this transport listens: the
+    /// far end is the topic and the subscription both, so what comes back
+    /// went through the topic and arrived the way a Receive Location takes
+    /// it.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = socket::bind_tcp(HttpTarget::parse(&self.topic_url)?.authority)?;
+        let transport = self.clone();
+        let mut session = self.session();
         let (webhook, webhook_address) = self.bind()?;
-        Ok(Box::new(Serving {
-            transport: self.clone(),
-            session: self.session(),
-            listener,
-            address,
-            webhook,
-            webhook_address,
-        }))
+        Ok(Box::new(Listening::new(
+            move |listener: &TcpListener| {
+                let published = match session.serve_one(listener)? {
+                    Event::Published(event) => event,
+                    Event::Refused(code) => {
+                        return Err(protocol_error(format!("the session refused: {code}")));
+                    }
+                };
+                let url = format!("http://{webhook_address}/hook");
+                let (delivered, taken) = both_ends(
+                    move || {
+                        let taken = transport.accept_one(&webhook)?;
+                        if taken.is_empty() {
+                            return transport.accept_one(&webhook);
+                        }
+                        Ok(taken)
+                    },
+                    || {
+                        session
+                            .validate(&url)
+                            .and_then(|()| session.deliver(&url, &published))
+                    },
+                    || poke(&webhook_address),
+                );
+                delivered?;
+                next_arrival(taken?, "delivered, but the webhook took nothing")
+            },
+            socket::bind_tcp(HttpTarget::parse(&self.topic_url)?.authority)?,
+        )))
     }
 
     /// Publish the payload as one event, from a fresh near end presenting
