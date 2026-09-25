@@ -17,8 +17,8 @@ use transport::error::{Result, protocol_error};
 use crate::client::{API_VERSION, KEY_HEADER};
 use crate::event::{CloudEvent, EVENT_CEILING};
 use crate::webhook;
-use http::message::{Request, Response};
 use http::server;
+use net::http::{Request, Response};
 
 /// What the client did, as [`Session::serve_one`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]

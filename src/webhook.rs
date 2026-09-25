@@ -20,9 +20,9 @@ use transport::error::{Result, TransportError, protocol_error};
 
 use crate::event::{BATCH_CONTENT_TYPE, CONTENT_TYPE, CloudEvent};
 use http::endpoint;
-use http::message::{self, Request, Response};
 use http::server;
-use http::target::HttpTarget;
+use net::Endpoint;
+use net::http::{Request, Response};
 
 /// What Event Grid delivered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,15 +108,14 @@ pub fn handshake(path: &str, origin: &str) -> Request {
 /// Where the URL is not HTTP, the webhook could not be reached, or it did
 /// not answer 2xx — Event Grid retries that, so it is retryable.
 pub fn push(webhook_url: &str, request: Request, timeout: Option<Duration>) -> Result<Response> {
-    let target = HttpTarget::parse(webhook_url)?;
-    let scheme = if target.secure { "https" } else { "http" };
+    let endpoint = Endpoint::parse(webhook_url)?;
     let request = Request {
-        path: target.path.to_string(),
+        path: endpoint.path().to_string(),
         ..request
     }
-    .header("Host", target.authority);
-    let stream = endpoint::connect(&format!("{scheme}://{}", target.authority), timeout)?;
-    let response = message::exchange(stream, &request)?;
+    .header("Host", &endpoint.authority());
+    let stream = endpoint::connect(&endpoint, timeout)?;
+    let response = net::http::exchange(stream, &request)?;
     if (200..300).contains(&response.status) {
         Ok(response)
     } else {

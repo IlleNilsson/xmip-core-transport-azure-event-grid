@@ -46,7 +46,7 @@ use std::time::Duration;
 
 pub use client::{API_VERSION, Client, KEY_HEADER};
 pub use event::{CloudEvent, ENVELOPE, EVENT_CEILING};
-use http::target::HttpTarget;
+use net::Endpoint;
 pub use session::{Event, Session};
 use transport::arrived::next_arrival;
 use transport::ceiling;
@@ -246,7 +246,7 @@ impl Loopback for EventGridTransport {
                 delivered?;
                 next_arrival(taken?, "delivered, but the webhook took nothing")
             },
-            socket::bind_tcp(HttpTarget::parse(&self.topic_url)?.authority)?,
+            socket::bind_tcp(&Endpoint::parse(&self.topic_url)?.address())?,
         )))
     }
 

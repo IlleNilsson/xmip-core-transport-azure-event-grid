@@ -14,8 +14,9 @@ use transport::error::Result;
 
 use crate::event::{CONTENT_TYPE, CloudEvent};
 use http::endpoint;
-use http::message::{self, Request, Response};
-use http::target::HttpTarget;
+use http::status;
+use net::Endpoint;
+use net::http::{Request, Response};
 
 /// The header the topic key travels in.
 pub const KEY_HEADER: &str = "aeg-sas-key";
@@ -51,17 +52,15 @@ impl Client {
     /// Where the URL is not HTTP, or the topic refused or could not be
     /// reached.
     pub fn publish(&self, topic_url: &str, event: &CloudEvent) -> Result<()> {
-        let target = HttpTarget::parse(topic_url)?;
-        let scheme = if target.secure { "https" } else { "http" };
-        let endpoint = format!("{scheme}://{}", target.authority);
-        let request = Request::new("POST", target.path)
+        let endpoint = Endpoint::parse(topic_url)?;
+        let request = Request::new("POST", endpoint.path())
             .query("api-version", API_VERSION)
-            .header("Host", &endpoint::authority(&endpoint)?)
+            .header("Host", &endpoint.authority())
             .header(KEY_HEADER, &self.key)
             .header("Content-Type", CONTENT_TYPE)
             .body(event.to_json().to_string().as_bytes());
         let stream = endpoint::connect(&endpoint, self.timeout)?;
-        judge(message::exchange(stream, &request)?).map(|_| ())
+        judge(net::http::exchange(stream, &request)?).map(|_| ())
     }
 }
 
@@ -72,7 +71,7 @@ impl Client {
 /// # Errors
 /// Where the status is not 2xx.
 pub fn judge(response: Response) -> Result<Response> {
-    message::judge("Event Grid", response, code, |_| false)
+    status::judge("Event Grid", response, code, |_| false)
 }
 
 /// The code an error answer names, or nothing.
