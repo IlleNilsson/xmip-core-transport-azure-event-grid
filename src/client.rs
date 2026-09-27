@@ -15,7 +15,7 @@ use transport::error::Result;
 use crate::envelope;
 use event::binding::STRUCTURED;
 use event::wire::WireEvent;
-use http::endpoint;
+use http::endpoint::{Connections, Offer};
 use http::status;
 use net::Endpoint;
 use net::http::{Request, Response};
@@ -29,6 +29,9 @@ pub const API_VERSION: &str = "2018-01-01";
 pub struct Client {
     key: String,
     timeout: Option<Duration>,
+    /// The connections kept to the service, shared with the transport
+    /// that made this client.
+    connections: Connections,
 }
 
 impl Client {
@@ -38,6 +41,7 @@ impl Client {
         Self {
             key: key.to_string(),
             timeout: None,
+            connections: Connections::new(),
         }
     }
 
@@ -45,6 +49,14 @@ impl Client {
     #[must_use]
     pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Keep connections among `connections`, which the transport holds
+    /// across every client it makes.
+    #[must_use]
+    pub fn sharing(mut self, connections: Connections) -> Self {
+        self.connections = connections;
         self
     }
 
@@ -61,8 +73,10 @@ impl Client {
             .header(KEY_HEADER, &self.key)
             .header("Content-Type", STRUCTURED)
             .body(envelope::json(event)?.to_string().as_bytes());
-        let stream = endpoint::connect(&endpoint, self.timeout)?;
-        judge(net::http::exchange(stream, &request)?).map(|_| ())
+        let answer = self
+            .connections
+            .exchange(&endpoint, self.timeout, Offer::Http11, &request)?;
+        judge(answer).map(|_| ())
     }
 }
 

@@ -15,6 +15,8 @@ and its own identifiers, until 2026-09-26. What stays here is Event Grid's
 one-mebibyte ceiling an event keeps and the share of it the envelope takes,
 and a Stream's bytes out of an event another publisher wrote.
 
+Requests go on connections kept between them (`http::endpoint::Connections`, offering HTTP/1.1): the transport holds them and hands them to every client it makes, so a call costs one exchange and not a connect, a TLS handshake and a `Connection: close`, as it did until 2026-09-27.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
