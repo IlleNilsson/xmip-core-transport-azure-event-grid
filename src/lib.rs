@@ -46,6 +46,7 @@ use std::time::Duration;
 
 pub use client::{API_VERSION, Client, KEY_HEADER};
 pub use envelope::{ENVELOPE, EVENT_CEILING};
+use http::endpoint::Connections;
 use net::Endpoint;
 pub use session::{Event, Session};
 use transport::arrived::next_arrival;
@@ -75,6 +76,9 @@ pub struct EventGridTransport {
     key: String,
     bind: String,
     timeout: Option<Duration>,
+    /// The connections kept to the service, shared by every client this
+    /// makes.
+    connections: Connections,
 }
 
 impl EventGridTransport {
@@ -88,6 +92,7 @@ impl EventGridTransport {
             key: String::new(),
             bind: "127.0.0.1:0".to_string(),
             timeout: None,
+            connections: Connections::new(),
         }
     }
 
@@ -117,6 +122,7 @@ impl EventGridTransport {
     #[must_use]
     pub fn client(&self) -> Client {
         let client = Client::new(&self.key);
+        let client = client.sharing(self.connections.clone());
         match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
             None => client,
