@@ -47,6 +47,7 @@ use std::time::Duration;
 pub use client::{API_VERSION, Client, KEY_HEADER};
 pub use envelope::{ENVELOPE, EVENT_CEILING};
 use http::endpoint::Connections;
+use http::inbound::Inbound;
 use net::Endpoint;
 pub use session::{Event, Session};
 use transport::arrived::next_arrival;
@@ -79,6 +80,9 @@ pub struct EventGridTransport {
     /// The connections kept to the service, shared by every client this
     /// makes.
     connections: Connections,
+    /// The webhook's listener a Receive Location keeps, and the
+    /// connections Event Grid keeps on it.
+    inbound: Inbound,
 }
 
 impl EventGridTransport {
@@ -93,6 +97,7 @@ impl EventGridTransport {
             bind: "127.0.0.1:0".to_string(),
             timeout: None,
             connections: Connections::new(),
+            inbound: Inbound::new(),
         }
     }
 
@@ -155,13 +160,7 @@ impl EventGridTransport {
     /// # Errors
     /// Where the connection failed or the delivery was not one.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Arrived>> {
-        match webhook::accept_one(listener, self.timeout)? {
-            Delivery::Events(events) => Ok(events
-                .into_iter()
-                .map(|event| Arrived::new(envelope::origin(&event), envelope::data(&event)))
-                .collect()),
-            Delivery::Handshake(_) | Delivery::Validation(_) => Ok(Vec::new()),
-        }
+        Ok(arrivals(webhook::accept_one(listener, self.timeout)?))
     }
 
     /// The topic a target names, or this transport's own where it names
@@ -175,6 +174,18 @@ impl EventGridTransport {
     }
 }
 
+/// What a delivery comes to: the events it carried as Streams; a handshake
+/// or a validation, answered, as nothing yet.
+fn arrivals(delivery: Delivery) -> Vec<Arrived> {
+    match delivery {
+        Delivery::Events(events) => events
+            .into_iter()
+            .map(|event| Arrived::new(envelope::origin(&event), envelope::data(&event)))
+            .collect(),
+        Delivery::Handshake(_) | Delivery::Validation(_) => Vec::new(),
+    }
+}
+
 impl Transport for EventGridTransport {
     fn name(&self) -> &'static str {
         "azure-event-grid"
@@ -185,10 +196,15 @@ impl Transport for EventGridTransport {
     }
 
     /// One delivery: the events it carried, or nothing where it was the
-    /// handshake, now answered.
+    /// handshake, now answered. Taken from whichever connection Event Grid
+    /// posts on first, on the listener the first receive bound and kept.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let (listener, _) = self.bind()?;
-        self.accept_one(&listener)
+        let delivery = self.inbound.next(
+            || self.bind(),
+            self.timeout,
+            |request, _| webhook::answer(request),
+        )??;
+        Ok(arrivals(delivery))
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
@@ -339,6 +355,26 @@ mod tests {
             panic!("a Receive Location says where it listens");
         };
         assert!(refused.message.contains("\"listen\""), "{refused}");
+    }
+
+    #[test]
+    fn every_receive_takes_from_the_listener_the_first_bound() {
+        use event::wire::{Data, WireEvent};
+        let hook = node("http://127.0.0.1:1/api/events", "key");
+        let address = hook.inbound.bound(|| hook.bind()).expect("bound");
+        let url = format!("http://{address}/hook");
+        let grid = std::thread::spawn(move || {
+            for round in 0..5u8 {
+                let mut event = WireEvent::new(round.to_string(), "http://topic.local", "t");
+                event.data = Some(Data::Binary(vec![round]));
+                let delivery = webhook::deliver("/hook", &event).expect("written");
+                webhook::push(&url, delivery, Some(Duration::from_secs(2))).expect("pushed");
+            }
+        });
+        for round in 0..5u8 {
+            assert_eq!(hook.receive().expect("received")[0].bytes, [round]);
+        }
+        grid.join().expect("grid");
     }
 
     #[test]

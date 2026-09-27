@@ -136,10 +136,17 @@ pub fn push(webhook_url: &str, request: Request, timeout: Option<Duration>) -> R
 /// Where the connection could not be accepted, broke, or did not carry a
 /// delivery — which is answered 400 before the error is returned.
 pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<Delivery> {
-    server::serve_one(listener, timeout, |request| match parse(request) {
+    server::serve_one(listener, timeout, answer)?
+}
+
+/// What one delivery earns: what it was and the answer it asks for, or
+/// `400` where it was none — on a connection accepted for it, or one Event
+/// Grid keeps.
+pub fn answer(request: &Request) -> (Result<Delivery>, Response) {
+    match parse(request) {
         Ok((delivery, response)) => (Ok(delivery), response),
         Err(failure) => (Err(failure), Response::new(400)),
-    })?
+    }
 }
 
 #[cfg(test)]
