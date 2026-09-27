@@ -2,12 +2,12 @@
 //! and written.
 //!
 //! Before it delivers anything, Event Grid proves the webhook is willing:
-//! for a `CloudEvents` subscription an `OPTIONS` naming its origin in
+//! for a wire event subscription an `OPTIONS` naming its origin in
 //! `WebHook-Request-Origin`, answered by naming that origin back in
 //! `WebHook-Allowed-Origin`; for an Event Grid schema subscription a
 //! `SubscriptionValidation` event carrying a code, answered by echoing it
 //! as `validationResponse`. The webhook answers both. Then each event is
-//! one `POST` under the `CloudEvents` content type — or a batch under the
+//! one `POST` under the wire event content type — or a batch under the
 //! batch one — answered 200 once taken. Both halves are here — the
 //! webhook reads a delivery, the far end in [`crate::Session`] writes one
 //! — so the two cannot drift.
@@ -18,28 +18,31 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use transport::error::{Result, TransportError, protocol_error};
 
-use crate::event::{BATCH_CONTENT_TYPE, CONTENT_TYPE, CloudEvent};
+use crate::envelope;
+use event::binding::STRUCTURED;
+use event::json_format::JSON_BATCH_FORMAT;
+use event::wire::WireEvent;
 use http::endpoint;
 use http::server;
 use net::Endpoint;
 use net::http::{Request, Response};
 
 /// What Event Grid delivered.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Delivery {
     /// The abuse-protection handshake, from this origin — answered.
     Handshake(String),
     /// A subscription validation event with this code — echoed.
     Validation(String),
     /// Events, one or a batch.
-    Events(Vec<CloudEvent>),
+    Events(Vec<WireEvent>),
 }
 
 /// The delivery `request` carries, and the answer it gets.
 ///
 /// # Errors
 /// Where the request is neither handshake nor event: a body that is not
-/// JSON, an object that is not a `CloudEvent`, a validation with no code.
+/// JSON, an object that is not a `WireEvent`, a validation with no code.
 pub fn parse(request: &Request) -> Result<(Delivery, Response)> {
     if request.method == "OPTIONS" {
         let origin = request
@@ -63,34 +66,35 @@ pub fn parse(request: &Request) -> Result<(Delivery, Response)> {
         return Ok((Delivery::Validation(code.to_string()), response));
     }
     let events = match &body {
-        Value::Array(each) => each
-            .iter()
-            .map(CloudEvent::from_json)
-            .collect::<Result<_>>()?,
-        one => vec![CloudEvent::from_json(one)?],
+        Value::Array(each) => each.iter().map(envelope::read).collect::<Result<_>>()?,
+        one => vec![envelope::read(one)?],
     };
     Ok((Delivery::Events(events), Response::new(200)))
 }
 
 /// The far end's side: the request Event Grid makes to deliver `event` to
 /// a webhook at `path`.
-#[must_use]
-pub fn deliver(path: &str, event: &CloudEvent) -> Request {
-    Request::new("POST", path)
-        .header("Content-Type", CONTENT_TYPE)
+///
+/// # Errors
+/// What `envelope::json` refuses.
+pub fn deliver(path: &str, event: &WireEvent) -> Result<Request> {
+    Ok(Request::new("POST", path)
+        .header("Content-Type", STRUCTURED)
         .header("aeg-event-type", "Notification")
-        .body(event.to_json().to_string().as_bytes())
+        .body(envelope::json(event)?.to_string().as_bytes()))
 }
 
 /// The far end's side: the request Event Grid makes to deliver `events`
 /// as one batch.
-#[must_use]
-pub fn deliver_batch(path: &str, events: &[CloudEvent]) -> Request {
-    let batch: Vec<Value> = events.iter().map(CloudEvent::to_json).collect();
-    Request::new("POST", path)
-        .header("Content-Type", BATCH_CONTENT_TYPE)
+///
+/// # Errors
+/// What `envelope::json` refuses, for any of them.
+pub fn deliver_batch(path: &str, events: &[WireEvent]) -> Result<Request> {
+    let batch: Vec<Value> = events.iter().map(envelope::json).collect::<Result<_>>()?;
+    Ok(Request::new("POST", path)
+        .header("Content-Type", JSON_BATCH_FORMAT)
         .header("aeg-event-type", "Notification")
-        .body(Value::Array(batch).to_string().as_bytes())
+        .body(Value::Array(batch).to_string().as_bytes()))
 }
 
 /// The far end's side: the handshake Event Grid opens with, from `origin`.
@@ -141,23 +145,22 @@ pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<D
 #[cfg(test)]
 mod tests {
     use super::*;
+    use event::wire::Data;
     use transport::socket;
 
-    fn event(data: &[u8]) -> CloudEvent {
-        CloudEvent {
-            id: "1".to_string(),
-            source: "http://topic.local/api/events".to_string(),
-            kind: "t".to_string(),
-            data: data.to_vec(),
-        }
+    fn event(data: &[u8]) -> WireEvent {
+        let mut event = WireEvent::new("1", "http://topic.local/api/events", "t");
+        event.data = Some(Data::Binary(data.to_vec()));
+        event
     }
 
     #[test]
     fn a_delivery_is_written_as_event_grid_writes_it_and_reads_back() {
-        let (delivery, response) = parse(&deliver("/hook", &event(b"a<b"))).expect("read");
+        let sent = deliver("/hook", &event(b"a<b")).expect("written");
+        let (delivery, response) = parse(&sent).expect("read");
         assert_eq!(delivery, Delivery::Events(vec![event(b"a<b")]));
         assert_eq!(response.status, 200);
-        let batch = deliver_batch("/hook", &[event(b"1"), event(b"2")]);
+        let batch = deliver_batch("/hook", &[event(b"1"), event(b"2")]).expect("written");
         assert_eq!(
             parse(&batch).expect("read").0,
             Delivery::Events(vec![event(b"1"), event(b"2")])
@@ -176,7 +179,10 @@ mod tests {
             .body(br#"[{"data":{"validationCode":"c0de"}}]"#);
         let (delivery, response) = parse(&validation).expect("v");
         assert_eq!(delivery, Delivery::Validation("c0de".to_string()));
-        assert_eq!(response.text(), r#"{"validationResponse":"c0de"}"#);
+        assert_eq!(
+            response.text().expect("text"),
+            r#"{"validationResponse":"c0de"}"#
+        );
     }
 
     #[test]
@@ -210,7 +216,8 @@ mod tests {
             (first, second)
         });
         let url = format!("http://{address}/hook");
-        push(&url, deliver("/", &event(b"a")), timeout).expect("pushed");
+        let one = || deliver("/", &event(b"a")).expect("written");
+        push(&url, one(), timeout).expect("pushed");
         let refused = push(&url, Request::new("POST", "/").body(b"x"), timeout).expect_err("400");
         assert!(refused.retryable, "Event Grid retries a 400");
         let (first, second) = webhook.join().expect("thread");
@@ -219,6 +226,6 @@ mod tests {
             Delivery::Events(vec![event(b"a")])
         );
         assert!(second.is_err(), "not a delivery");
-        assert!(push("hook.local/x", deliver("/", &event(b"a")), timeout).is_err());
+        assert!(push("hook.local/x", one(), timeout).is_err());
     }
 }

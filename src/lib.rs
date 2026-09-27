@@ -1,19 +1,19 @@
 #![forbid(unsafe_code)]
 
-//! Streams that travel as `CloudEvents` through an Event Grid topic. One
+//! Streams that travel as wire events through an Event Grid topic. One
 //! event is one Stream, its id kept beside it.
 //!
 //! Event Grid is the event router of every organisation that lives in
 //! Azure: a topic, and subscriptions that deliver what is published to it
 //! — to a webhook, among other places. A Send Location publishes a Stream
-//! as one `CloudEvent` to a topic endpoint, with the topic key over plain
+//! as one `WireEvent` to a topic endpoint, with the topic key over plain
 //! HTTP/1.1 on a socket — `https://` with the `tls` feature, which is the
 //! http technology's TLS (ADR-0033). A Receive Location is the webhook a
 //! subscription delivers to: it answers the validation handshake Event
 //! Grid opens with, then takes each event as a Stream.
 //!
 //! ```text
-//! event.rs      one `CloudEvent`, written and read
+//! envelope.rs   a Stream as one `WireEvent`, and the ceilings an event keeps
 //! client.rs     Xmip's side: publish
 //! webhook.rs    the endpoint a subscription delivers to, and what it delivers
 //! session.rs    the far end a test or the playground runs on loopback
@@ -37,7 +37,7 @@
 //! with the webhook this transport listens as, and delivers to it.
 
 pub mod client;
-pub mod event;
+pub mod envelope;
 pub mod session;
 pub mod webhook;
 
@@ -45,7 +45,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::{API_VERSION, Client, KEY_HEADER};
-pub use event::{CloudEvent, ENVELOPE, EVENT_CEILING};
+pub use envelope::{ENVELOPE, EVENT_CEILING};
 use net::Endpoint;
 pub use session::{Event, Session};
 use transport::arrived::next_arrival;
@@ -54,8 +54,9 @@ use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
 pub use webhook::Delivery;
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The largest Stream one event carries: what a mebibyte leaves for the
 /// data once the envelope has its share and base64 has taken four bytes
@@ -78,7 +79,7 @@ pub struct EventGridTransport {
 
 impl EventGridTransport {
     /// Publish to the topic endpoint at `topic_url` — `https://<topic>.
-    /// <region>-1.eventgrid.azure.net/api/events` in the cloud,
+    /// <region>-1.eventgrid.azure.net/api/events` at Azure,
     /// `http://host:port/api/events` for a stand-in.
     #[must_use]
     pub fn new(topic_url: impl Into<String>) -> Self {
@@ -151,7 +152,7 @@ impl EventGridTransport {
         match webhook::accept_one(listener, self.timeout)? {
             Delivery::Events(events) => Ok(events
                 .into_iter()
-                .map(|event| Arrived::new(event.origin(), event.data))
+                .map(|event| Arrived::new(envelope::origin(&event), envelope::data(&event)))
                 .collect()),
             Delivery::Handshake(_) | Delivery::Validation(_) => Ok(Vec::new()),
         }
@@ -188,7 +189,46 @@ impl Transport for EventGridTransport {
         ceiling::within(bytes.len(), ceiling(), "one Event Grid event carries")?;
         let topic_url = self.resolve(target);
         self.client()
-            .publish(topic_url, &CloudEvent::stream(topic_url, bytes))
+            .publish(topic_url, &envelope::stream(topic_url, bytes))
+    }
+}
+
+impl Configured for EventGridTransport {
+    /// The address is the topic endpoint a Send Location publishes to,
+    /// `https://<topic>.<region>-1.eventgrid.azure.net/api/events`. The
+    /// topic key is the Location's credentials, not a setting.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "listen",
+                kind: Kind::Address,
+                presence: Presence::Required,
+                meaning: "Where a Receive Location listens for deliveries: the host and port \
+                          the subscription's webhook URL resolves to.",
+                applies: Applies::Receive,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long an endpoint that stops answering is waited on; unbounded \
+                          when left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        // The topic key comes through the Location's credentials.
+        let mut transport = Self::new(address);
+        if let Some(listen) = settings.optional_text("listen") {
+            transport = transport.listening_at(listen);
+        }
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
     }
 }
 
@@ -272,6 +312,30 @@ mod tests {
     }
 
     #[test]
+    fn event_grid_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(
+            EventGridTransport::SETTINGS.problems(),
+            Vec::<String>::new()
+        );
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let topic = "https://orders.westeurope-1.eventgrid.azure.net/api/events";
+        let sent = EventGridTransport::open(topic, Applies::Send, &[text("timeout", "5s")])
+            .expect("built");
+        assert_eq!(sent.topic_url, topic);
+        assert_eq!(sent.timeout, Some(Duration::from_secs(5)));
+        assert!(sent.key.is_empty(), "the key is the credentials'");
+        let received =
+            EventGridTransport::open(topic, Applies::Receive, &[text("listen", "0.0.0.0:8443")])
+                .expect("built");
+        assert_eq!(received.bind, "0.0.0.0:8443");
+        let Err(refused) = EventGridTransport::open(topic, Applies::Receive, &[]) else {
+            panic!("a Receive Location says where it listens");
+        };
+        assert!(refused.message.contains("\"listen\""), "{refused}");
+    }
+
+    #[test]
     fn what_is_published_is_delivered_to_the_validated_webhook_and_received() {
         let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
         let topic = format!("http://{address}/api/events");
@@ -295,8 +359,9 @@ mod tests {
         assert_eq!(arrived[0].bytes, [0, 0xff, b'\r', b'\n']);
         assert!(arrived[0].origin_uri.starts_with(&format!("{topic}#")));
         let published = far_end.join().expect("thread");
+        let origin = &arrived[0].origin_uri;
         assert!(
-            matches!(published, Event::Published(event) if event.origin() == arrived[0].origin_uri)
+            matches!(published, Event::Published(event) if envelope::origin(&event) == *origin)
         );
     }
 

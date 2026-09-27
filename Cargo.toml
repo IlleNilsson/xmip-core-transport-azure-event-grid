@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/IlleNilsson/xmip-core-transport-azure-event-grid"
-description = "Azure Event Grid transport: a topic key over the REST API — publish a Stream as one CloudEvent to a topic, receive as the webhook a subscription delivers to, answering the validation handshake — a topic endpoint is a Location. A xmip-core-transport technology."
+description = "Azure Event Grid transport: a topic key over the REST API — publish a Stream as one wire event to a topic, receive as the webhook a subscription delivers to, answering the validation handshake — a topic endpoint is a Location. A xmip-core-transport technology."
 publish = false
 
 [lib]
@@ -26,8 +26,15 @@ http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNil
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 # The API answers in JSON, and serde reads it.
 serde_json = "1"
-# Bytes travel in JSON as base64, the estate's one: codec's.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+# The WireEvent a Stream travels in — its attributes, its JSON format,
+# data_base64 for bytes — is the event capability's, written and read
+# there once (ADR-0065 clause 3). This crate carried a second one until
+# 2026-09-26. A Technology may depend on Foundation (repository-model.md
+# section 4).
+event = { package = "xmip-core-event", git = "https://github.com/IlleNilsson/xmip-core-event", branch = "main" }
+# The identity a published event carries, minted by the estate's one
+# generator.
+xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 
 [features]
 default = []
@@ -44,3 +51,7 @@ missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 unwrap_used = "warn"
 expect_used = "allow"
+
+# What this depends on runs optimized in a debug build (rust-style.md 5b).
+[profile.dev.package."*"]
+opt-level = 3

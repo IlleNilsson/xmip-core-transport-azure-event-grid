@@ -2,9 +2,9 @@
 //! the topic key over one connection to the topic endpoint.
 //!
 //! A topic endpoint is a whole URL — `https://<topic>.<region>-1.
-//! eventgrid.azure.net/api/events` in the cloud, `http://127.0.0.1:port/
+//! eventgrid.azure.net/api/events` at Azure, `http://127.0.0.1:port/
 //! api/events` for a stand-in — and publishing is one `POST` to it with
-//! `aeg-sas-key` naming the key and one `CloudEvent` as the body. The
+//! `aeg-sas-key` naming the key and one `WireEvent` as the body. The
 //! service answers 200 with nothing, or a JSON error naming its code.
 
 use std::time::Duration;
@@ -12,7 +12,9 @@ use std::time::Duration;
 use serde_json::Value;
 use transport::error::Result;
 
-use crate::event::{CONTENT_TYPE, CloudEvent};
+use crate::envelope;
+use event::binding::STRUCTURED;
+use event::wire::WireEvent;
 use http::endpoint;
 use http::status;
 use net::Endpoint;
@@ -49,16 +51,16 @@ impl Client {
     /// Publish `event` to the topic at `topic_url`.
     ///
     /// # Errors
-    /// Where the URL is not HTTP, or the topic refused or could not be
-    /// reached.
-    pub fn publish(&self, topic_url: &str, event: &CloudEvent) -> Result<()> {
+    /// Where the URL is not HTTP, the event cannot be written, or the topic
+    /// refused or could not be reached.
+    pub fn publish(&self, topic_url: &str, event: &WireEvent) -> Result<()> {
         let endpoint = Endpoint::parse(topic_url)?;
         let request = Request::new("POST", endpoint.path())
             .query("api-version", API_VERSION)
             .header("Host", &endpoint.authority())
             .header(KEY_HEADER, &self.key)
-            .header("Content-Type", CONTENT_TYPE)
-            .body(event.to_json().to_string().as_bytes());
+            .header("Content-Type", STRUCTURED)
+            .body(envelope::json(event)?.to_string().as_bytes());
         let stream = endpoint::connect(&endpoint, self.timeout)?;
         judge(net::http::exchange(stream, &request)?).map(|_| ())
     }
@@ -85,6 +87,7 @@ fn code(response: &Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::envelope::stream;
     use crate::session::{Event, Session};
     use serde_json::json;
     use transport::socket;
@@ -100,7 +103,7 @@ mod tests {
             (session, events)
         });
         let topic = format!("http://{address}/api/events");
-        let event = CloudEvent::stream(&topic, b"UNA:+.? '");
+        let event = stream(&topic, b"UNA:+.? '");
         Client::new("key")
             .timing_out_after(Duration::from_secs(2))
             .publish(&topic, &event)
@@ -116,15 +119,12 @@ mod tests {
         assert_eq!(events[1], Event::Refused("Unauthorized".to_string()));
         assert!(
             Client::new("k")
-                .publish("topic.local", &CloudEvent::stream("s", b""))
+                .publish("topic.local", &stream("s", b""))
                 .is_err()
         );
         assert!(
             Client::new("k")
-                .publish(
-                    "http://127.0.0.1:1/api/events",
-                    &CloudEvent::stream("s", b"")
-                )
+                .publish("http://127.0.0.1:1/api/events", &stream("s", b""))
                 .expect_err("nobody")
                 .retryable
         );

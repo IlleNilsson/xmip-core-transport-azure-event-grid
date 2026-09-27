@@ -2,7 +2,7 @@
 //! deliver them, and what a test or the playground puts on loopback.
 //!
 //! Not Event Grid. One session stands as a topic: it checks every publish
-//! for one key, reads the `CloudEvent` or the batch, holds what was
+//! for one key, reads the `WireEvent` or the batch, holds what was
 //! published in memory and answers 200 as the service does, or the JSON
 //! error with its code. Delivering to a webhook is [`Session::deliver`],
 //! and opening with the handshake is [`Session::validate`], which a test
@@ -15,24 +15,25 @@ use serde_json::{Value, json};
 use transport::error::{Result, protocol_error};
 
 use crate::client::{API_VERSION, KEY_HEADER};
-use crate::event::{CloudEvent, EVENT_CEILING};
+use crate::envelope::{self, EVENT_CEILING};
 use crate::webhook;
+use event::wire::WireEvent;
 use http::server;
 use net::http::{Request, Response};
 
 /// What the client did, as [`Session::serve_one`] reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// The client published this event — the first of a batch, where it
     /// was one.
-    Published(CloudEvent),
+    Published(WireEvent),
     /// The client was answered with this error code.
     Refused(String),
 }
 
 pub struct Session {
     key: String,
-    events: Vec<CloudEvent>,
+    events: Vec<WireEvent>,
     timeout: Option<Duration>,
 }
 
@@ -56,7 +57,7 @@ impl Session {
 
     /// Every event published so far, in order.
     #[must_use]
-    pub fn events(&self) -> Vec<CloudEvent> {
+    pub fn events(&self) -> Vec<WireEvent> {
         self.events.clone()
     }
 
@@ -86,9 +87,10 @@ impl Session {
     /// Deliver `event` to the webhook at `webhook_url`, as Event Grid does.
     ///
     /// # Errors
-    /// Where the webhook could not be reached or did not take it.
-    pub fn deliver(&self, webhook_url: &str, event: &CloudEvent) -> Result<()> {
-        webhook::push(webhook_url, webhook::deliver("/", event), self.timeout).map(|_| ())
+    /// Where the event cannot be written, or the webhook could not be
+    /// reached or did not take it.
+    pub fn deliver(&self, webhook_url: &str, event: &WireEvent) -> Result<()> {
+        webhook::push(webhook_url, webhook::deliver("/", event)?, self.timeout).map(|_| ())
     }
 
     fn answer(&mut self, request: &Request) -> (Event, Response) {
@@ -123,7 +125,7 @@ impl Session {
                 let message = format!("An event is at most {EVENT_CEILING} bytes");
                 return refused(413, "RequestEntityTooLarge", &message);
             }
-            match CloudEvent::from_json(value) {
+            match envelope::read(value) {
                 Ok(event) => published.push(event),
                 Err(failure) => return refused(400, "BadRequest", &failure.message),
             }
@@ -147,25 +149,26 @@ fn refused(status: u16, code: &str, message: &str) -> (Event, Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::CONTENT_TYPE;
+    use crate::envelope::stream;
+    use event::binding::STRUCTURED;
 
     fn publish(key: &str, body: &[u8]) -> Request {
         Request::new("POST", "/api/events")
             .query("api-version", API_VERSION)
             .header(KEY_HEADER, key)
-            .header("Content-Type", CONTENT_TYPE)
+            .header("Content-Type", STRUCTURED)
             .body(body)
     }
 
     #[test]
     fn a_session_takes_one_event_or_a_batch_and_refuses_in_event_grids_shapes() {
         let mut session = Session::new("key");
-        let event = CloudEvent::stream("http://topic.local/api/events", b"a<b");
-        let (taken, response) =
-            session.answer(&publish("key", event.to_json().to_string().as_bytes()));
+        let event = stream("http://topic.local/api/events", b"a<b");
+        let written = envelope::json(&event).expect("written");
+        let (taken, response) = session.answer(&publish("key", written.to_string().as_bytes()));
         assert_eq!(response.status, 200);
         assert_eq!(taken, Event::Published(event.clone()));
-        let batch = Value::Array(vec![event.to_json(), event.to_json()]).to_string();
+        let batch = Value::Array(vec![written.clone(), written]).to_string();
         let (taken, _) = session.answer(&publish("key", batch.as_bytes()));
         assert_eq!(taken, Event::Published(event.clone()));
         assert_eq!(session.events().len(), 3);
@@ -174,15 +177,15 @@ mod tests {
             (taken, response.status),
             (Event::Refused("Unauthorized".to_string()), 401)
         );
-        assert!(response.text().contains("not valid"));
+        assert!(response.text().expect("text").contains("not valid"));
         let (_, response) = session.answer(&publish("key", b"not json"));
         assert_eq!(response.status, 400);
         let (_, response) = session.answer(&publish("key", b"[]"));
         assert_eq!(response.status, 400);
         let (_, response) = session.answer(&publish("key", br#"{"specversion":"0.3"}"#));
         assert_eq!(response.status, 400);
-        let too_big = CloudEvent::stream("s", &vec![0; EVENT_CEILING])
-            .to_json()
+        let too_big = envelope::json(&stream("s", &vec![0; EVENT_CEILING]))
+            .expect("written")
             .to_string();
         let (taken, response) = session.answer(&publish("key", too_big.as_bytes()));
         assert_eq!(
