@@ -94,7 +94,8 @@ impl Session {
     }
 
     fn answer(&mut self, request: &Request) -> (Event, Response) {
-        if request.header_value(KEY_HEADER) != Some(self.key.as_str()) {
+        let presented = request.header_value(KEY_HEADER).unwrap_or_default();
+        if !codec::constant_time::equal(presented.as_bytes(), self.key.as_bytes()) {
             return refused(
                 401,
                 "Unauthorized",
