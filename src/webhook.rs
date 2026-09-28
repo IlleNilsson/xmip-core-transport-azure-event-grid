@@ -20,7 +20,6 @@ use transport::error::{Result, TransportError, protocol_error};
 
 use crate::envelope;
 use event::binding::STRUCTURED;
-use event::json_format::JSON_BATCH_FORMAT;
 use event::wire::WireEvent;
 use http::endpoint;
 use http::server;
@@ -89,10 +88,11 @@ pub fn deliver(path: &str, event: &WireEvent) -> Result<Request> {
 ///
 /// # Errors
 /// What `envelope::json` refuses, for any of them.
-pub fn deliver_batch(path: &str, events: &[WireEvent]) -> Result<Request> {
+#[cfg(test)]
+fn deliver_batch(path: &str, events: &[WireEvent]) -> Result<Request> {
     let batch: Vec<Value> = events.iter().map(envelope::json).collect::<Result<_>>()?;
     Ok(Request::new("POST", path)
-        .header("Content-Type", JSON_BATCH_FORMAT)
+        .header("Content-Type", event::json_format::JSON_BATCH_FORMAT)
         .header("aeg-event-type", "Notification")
         .body(Value::Array(batch).to_string().as_bytes()))
 }

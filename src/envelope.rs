@@ -17,7 +17,7 @@ use transport::error::{Result, protocol_error};
 use xcore::{EventId, IdGenerator, UuidV7Generator};
 
 /// The `type` every event this transport publishes carries.
-pub const STREAM_TYPE: &str = "se.xmip.stream";
+const STREAM_TYPE: &str = "se.xmip.stream";
 
 /// The largest event Event Grid carries, envelope and all: one mebibyte.
 pub const EVENT_CEILING: usize = 1024 * 1024;
