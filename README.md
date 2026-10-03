@@ -19,6 +19,10 @@ Requests go on connections kept between them (`http::endpoint::Connections`, off
 
 A Receive Location keeps its listener, bound on the first receive, and the connections senders keep open on it (`http::inbound::Inbound`): each receive takes the next request from whichever sends first, where until 2026-09-27 each receive bound a listener of its own, answered one request with `Connection: close`, and refused a request that came between two receives.
 
+## Acknowledged after the receive cycle
+
+Event Grid waits on its connection for the answer to a delivery until the runtime's whole receive cycle has ended for every event in it (runtime-model section 5): `200` where every event was accepted; `503` where any failed, and Event Grid delivers the whole batch again by its retry policy — events of it already accepted arrive twice, at-least-once and never a loss; otherwise, where any was refused, `401` (a sender not identified) or `400`, the statuses Event Grid does not retry for a webhook (its `403` and `422` it would), so the batch is not delivered again: its accepted events are Xmip's and its refused ones refused for good (`batch::status`). The validation handshake and the subscription validation are answered at once. No round trip is added: the answer is the one Event Grid always waited for, only later.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

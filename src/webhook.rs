@@ -22,6 +22,7 @@ use crate::envelope;
 use event::binding::STRUCTURED;
 use event::wire::WireEvent;
 use http::endpoint;
+use http::inbound::Heard;
 use http::server;
 use net::Endpoint;
 use net::http::{Request, Response};
@@ -89,7 +90,7 @@ pub fn deliver(path: &str, event: &WireEvent) -> Result<Request> {
 /// # Errors
 /// What `envelope::json` refuses, for any of them.
 #[cfg(test)]
-fn deliver_batch(path: &str, events: &[WireEvent]) -> Result<Request> {
+pub(crate) fn deliver_batch(path: &str, events: &[WireEvent]) -> Result<Request> {
     let batch: Vec<Value> = events.iter().map(envelope::json).collect::<Result<_>>()?;
     Ok(Request::new("POST", path)
         .header("Content-Type", event::json_format::JSON_BATCH_FORMAT)
@@ -110,7 +111,8 @@ pub fn handshake(path: &str, origin: &str) -> Request {
 ///
 /// # Errors
 /// Where the URL is not HTTP, the webhook could not be reached, or it did
-/// not answer 2xx — Event Grid retries that, so it is retryable.
+/// not answer 2xx. As Event Grid judges a webhook's answer, `400`, `401`
+/// and `413` are final and any other is retried.
 pub fn push(webhook_url: &str, request: Request, timeout: Option<Duration>) -> Result<Response> {
     let endpoint = Endpoint::parse(webhook_url)?;
     let request = Request {
@@ -120,14 +122,16 @@ pub fn push(webhook_url: &str, request: Request, timeout: Option<Duration>) -> R
     .header("Host", &endpoint.authority());
     let stream = endpoint::connect(&endpoint, timeout)?;
     let response = net::http::exchange(stream, &request)?;
-    if (200..300).contains(&response.status) {
-        Ok(response)
-    } else {
-        Err(TransportError::retryable(format!(
-            "the webhook answered {}",
-            response.status
-        )))
+    let status = response.status;
+    if (200..300).contains(&status) {
+        return Ok(response);
     }
+    let message = format!("the webhook answered {status}");
+    Err(if matches!(status, 400 | 401 | 413) {
+        TransportError::permanent(message)
+    } else {
+        TransportError::retryable(message)
+    })
 }
 
 /// Accept one delivery on `listener`, answer it, and say what it was.
@@ -146,6 +150,20 @@ pub fn answer(request: &Request) -> (Result<Delivery>, Response) {
     match parse(request) {
         Ok((delivery, response)) => (Ok(delivery), response),
         Err(failure) => (Err(failure), Response::new(400)),
+    }
+}
+
+/// What one delivery on a connection Event Grid keeps is heard as: events
+/// wait for their receive cycles' verdicts (`crate::batch`), and anything
+/// else — the handshake, the validation, an empty batch, what is no
+/// delivery — is answered at once as [`answer`] answers it.
+#[must_use]
+pub fn hear(request: &Request) -> Heard<Result<Delivery>> {
+    match answer(request) {
+        (Ok(Delivery::Events(events)), _) if !events.is_empty() => {
+            Heard::Waiting(Ok(Delivery::Events(events)))
+        }
+        (delivery, response) => Heard::Answered(delivery, response),
     }
 }
 
@@ -226,7 +244,7 @@ mod tests {
         let one = || deliver("/", &event(b"a")).expect("written");
         push(&url, one(), timeout).expect("pushed");
         let refused = push(&url, Request::new("POST", "/").body(b"x"), timeout).expect_err("400");
-        assert!(refused.retryable, "Event Grid retries a 400");
+        assert!(!refused.retryable, "Event Grid does not retry a 400");
         let (first, second) = webhook.join().expect("thread");
         assert_eq!(
             first.expect("a delivery"),
