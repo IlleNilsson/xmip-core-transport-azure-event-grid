@@ -36,6 +36,7 @@
 //! session up as the topic, takes the one publish, opens the handshake
 //! with the webhook this transport listens as, and delivers to it.
 
+mod batch;
 pub mod client;
 pub mod envelope;
 pub mod session;
@@ -56,7 +57,7 @@ use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Taken, Transport};
 pub use webhook::Delivery;
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
@@ -153,14 +154,17 @@ impl EventGridTransport {
         socket::bind_tcp(&self.bind)
     }
 
-    /// Take one delivery off an already-bound listener: the events it
-    /// carried as Streams; a handshake or a validation, answered, as
-    /// nothing yet.
+    /// Take one delivery off an already-bound listener and answer it at
+    /// once, as a far end does: the events it carried; a handshake or a
+    /// validation, answered, as nothing yet.
     ///
     /// # Errors
     /// Where the connection failed or the delivery was not one.
-    pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Arrived>> {
-        Ok(arrivals(webhook::accept_one(listener, self.timeout)?))
+    pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Taken>> {
+        Ok(carried(webhook::accept_one(listener, self.timeout)?)
+            .into_iter()
+            .map(|(origin, data)| Taken::new(origin, data))
+            .collect())
     }
 
     /// The topic a target names, or this transport's own where it names
@@ -174,13 +178,13 @@ impl EventGridTransport {
     }
 }
 
-/// What a delivery comes to: the events it carried as Streams; a handshake
-/// or a validation, answered, as nothing yet.
-fn arrivals(delivery: Delivery) -> Vec<Arrived> {
+/// What a delivery carries: each event's origin and data; a handshake or
+/// a validation, answered, as nothing yet.
+fn carried(delivery: Delivery) -> Vec<(String, Vec<u8>)> {
     match delivery {
         Delivery::Events(events) => events
-            .into_iter()
-            .map(|event| Arrived::new(envelope::origin(&event), envelope::data(&event)))
+            .iter()
+            .map(|event| (envelope::origin(event), envelope::data(event)))
             .collect(),
         Delivery::Handshake(_) | Delivery::Validation(_) => Vec::new(),
     }
@@ -195,16 +199,38 @@ impl Transport for EventGridTransport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Unordered(
+            "each request is its own, and a connection waiting for its answer takes no next request",
+        )
+    }
+
     /// One delivery: the events it carried, or nothing where it was the
     /// handshake, now answered. Taken from whichever connection Event Grid
     /// posts on first, on the listener the first receive bound and kept.
+    ///
+    /// Event Grid waits for its answer to a delivery of events until every
+    /// one has its verdict (`batch::status`): `200` where all were
+    /// accepted; `503` where any failed, and Event Grid delivers the batch
+    /// again by its retry policy; otherwise, where any was refused, `401` or
+    /// `400`, which Event Grid does not retry. The handshake is answered at
+    /// once.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let delivery = self.inbound.next(
+        let (delivery, reply) = self.inbound.next(
             || self.bind(),
             self.timeout,
-            |request, _| webhook::answer(request),
-        )??;
-        Ok(arrivals(delivery))
+            |request, _| webhook::hear(&request),
+        )?;
+        let carried = carried(delivery?);
+        let Some(reply) = reply else {
+            return Ok(Vec::new());
+        };
+        let acknowledgements = batch::acknowledgements(reply, carried.len());
+        Ok(carried
+            .into_iter()
+            .zip(acknowledgements)
+            .map(|((origin, data), acknowledgement)| Arrived::whole(origin, data, acknowledgement))
+            .collect())
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
@@ -372,9 +398,63 @@ mod tests {
             }
         });
         for round in 0..5u8 {
-            assert_eq!(hook.receive().expect("received")[0].bytes, [round]);
+            let mut arrived = hook.receive().expect("received");
+            assert_eq!(arrived.remove(0).taken().expect("taken").bytes, [round]);
         }
         grid.join().expect("grid");
+    }
+
+    #[test]
+    fn a_batch_is_answered_once_every_event_has_its_verdict() {
+        use event::wire::{Data, WireEvent};
+        let hook = node("http://127.0.0.1:1/api/events", "key");
+        let address = hook.inbound.bound(|| hook.bind()).expect("bound");
+        let url = format!("http://{address}/hook");
+        let grid = std::thread::spawn(move || {
+            let events: Vec<WireEvent> = (0..2u8)
+                .map(|n| {
+                    let mut event = WireEvent::new(n.to_string(), "http://topic.local", "t");
+                    event.data = Some(Data::Binary(vec![n]));
+                    event
+                })
+                .collect();
+            let timeout = Some(Duration::from_secs(2));
+            let batch = || webhook::deliver_batch("/hook", &events).expect("written");
+            let failed = webhook::push(&url, batch(), timeout).expect_err("failed");
+            let accepted = webhook::push(&url, batch(), timeout).expect("delivered again");
+            let refused = webhook::push(&url, batch(), timeout).expect_err("refused");
+            (failed, accepted.status, refused)
+        });
+        let mut arrived = hook.receive().expect("received");
+        assert_eq!(arrived.len(), 2);
+        assert!(arrived.iter().all(Arrived::defers));
+        let second = arrived.pop().expect("second");
+        arrived.pop().expect("first").taken().expect("accepted");
+        assert!(!grid.is_finished(), "no answer before the last verdict");
+        second.failed().expect("failed");
+        let again = hook.receive().expect("again");
+        let taken: Vec<_> = again
+            .into_iter()
+            .map(|arrived| arrived.taken().expect("taken").bytes)
+            .collect();
+        assert_eq!(taken, [[0], [1]]);
+        let mut third = hook.receive().expect("a third time");
+        third
+            .pop()
+            .expect("second")
+            .refused(transport::Refusal::Forbidden)
+            .expect("refused");
+        third.pop().expect("first").taken().expect("accepted");
+        let (failed, accepted, refused) = grid.join().expect("grid");
+        assert!(
+            failed.retryable && failed.message.contains("503"),
+            "{failed}"
+        );
+        assert_eq!(accepted, 200);
+        assert!(
+            !refused.retryable && refused.message.contains("400"),
+            "not delivered again: {refused}"
+        );
     }
 
     #[test]
