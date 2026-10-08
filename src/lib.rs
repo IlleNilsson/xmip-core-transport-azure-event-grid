@@ -49,9 +49,11 @@ pub use client::{API_VERSION, Client, KEY_HEADER};
 pub use envelope::{ENVELOPE, EVENT_CEILING};
 use http::endpoint::Connections;
 use http::inbound::Inbound;
+use http::server;
 use net::Endpoint;
 use net::ceiling;
 pub use session::{Event, Session};
+use transport::ArrivalIdentity;
 use transport::arrived::next_arrival;
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
@@ -219,8 +221,12 @@ impl Transport for EventGridTransport {
         let (delivery, reply) = self.inbound.next(
             || self.bind(),
             self.timeout,
-            |request, _| webhook::hear(&request),
+            |request, peer| {
+                let sender = server::Sender::of(&request, peer);
+                webhook::hear(&request).map(|delivery| (delivery, sender))
+            },
         )?;
+        let (delivery, sender) = delivery;
         let carried = carried(delivery?);
         let Some(reply) = reply else {
             return Ok(Vec::new());
@@ -229,7 +235,11 @@ impl Transport for EventGridTransport {
         Ok(carried
             .into_iter()
             .zip(acknowledgements)
-            .map(|((origin, data), acknowledgement)| Arrived::whole(origin, data, acknowledgement))
+            .map(|((origin, data), acknowledgement)| {
+                sender
+                    .clone()
+                    .on(Arrived::whole(origin, data, acknowledgement))
+            })
             .collect())
     }
 
@@ -293,6 +303,12 @@ impl EventGridTransport {
 }
 
 impl Loopback for EventGridTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "the service pushes it: the request says who the service is, not the publisher",
+        )
+    }
+
     fn ceiling(&self) -> Option<usize> {
         Some(ceiling())
     }
