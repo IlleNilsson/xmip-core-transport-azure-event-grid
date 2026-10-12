@@ -207,6 +207,10 @@ impl Transport for EventGridTransport {
         )
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("the listener waits for a delivery")
+    }
+
     /// One delivery: the events it carried, or nothing where it was the
     /// handshake, now answered. Taken from whichever connection Event Grid
     /// posts on first, on the listener the first receive bound and kept.
