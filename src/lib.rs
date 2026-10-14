@@ -495,7 +495,10 @@ mod tests {
         });
         near.send("", &[0, 0xff, b'\r', b'\n'])
             .expect("its own topic");
-        assert!(near.accept_one(&webhook).expect("handshake").is_empty());
+        assert_eq!(
+            near.accept_one(&webhook).expect("handshake"),
+            [] as [Taken; 0]
+        );
         let arrived = near.accept_one(&webhook).expect("delivered");
         assert_eq!(arrived.len(), 1);
         assert_eq!(arrived[0].bytes, [0, 0xff, b'\r', b'\n']);

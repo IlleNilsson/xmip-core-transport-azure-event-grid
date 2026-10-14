@@ -89,7 +89,7 @@ mod tests {
         );
         let other = stream("s", b"");
         assert_ne!(other.id, event.id, "fresh ids");
-        assert!(data(&other).is_empty());
+        assert_eq!(data(&other), [] as [u8; 0]);
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
             "data": {"a": 1}});
         assert_eq!(data(&read(&object).expect("read")), br#"{"a":1}"#);
         let bare = json!({"specversion": "1.0", "type": "t", "source": "s", "id": "1"});
-        assert!(data(&read(&bare).expect("read")).is_empty());
+        assert_eq!(data(&read(&bare).expect("read")), [] as [u8; 0]);
         let old = json!({"specversion": "0.3", "type": "t", "source": "s", "id": "1"});
         assert!(read(&old).is_err());
         let nameless = json!({"specversion": "1.0", "type": "t", "source": "s"});
