@@ -221,7 +221,7 @@ impl Transport for EventGridTransport {
     /// again by its retry policy; otherwise, where any was refused, `401` or
     /// `400`, which Event Grid does not retry. The handshake is answered at
     /// once.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let (delivery, reply) = self.inbound.next(
             || self.bind(),
             self.timeout,
@@ -247,8 +247,15 @@ impl Transport for EventGridTransport {
             .collect())
     }
 
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        ceiling::within(bytes.len(), ceiling(), "one Event Grid event carries")?;
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered(
+            "one Event Grid event carries the whole body inside its JSON envelope",
+        )
+    }
+
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        ceiling::within(outgoing.len(), ceiling(), "one Event Grid event carries")?;
+        let bytes: &[u8] = &outgoing.gather()?;
         let topic_url = self.resolve(target);
         self.client()
             .publish(topic_url, &envelope::stream(topic_url, bytes))
