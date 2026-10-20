@@ -3,7 +3,7 @@
 //! Streams that travel as wire events through an Event Grid topic. One
 //! event is one Stream, its id kept beside it.
 //!
-//! Event Grid is the event router of every organisation that lives in
+//! Event Grid is the event router of every organization that lives in
 //! Azure: a topic, and subscriptions that deliver what is published to it
 //! — to a webhook, among other places. A Send Location publishes a Stream
 //! as one `WireEvent` to a topic endpoint, with the topic key over plain
@@ -19,7 +19,7 @@
 //! session.rs    the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, the target parser, HTTP itself and the judgement of an
+//! The endpoint, the target parser, HTTP itself and the judgment of an
 //! answer come from the http technology (ADR-0044).
 //!
 //! A Stream is bytes and travels as the event's `data_base64`, so nothing
@@ -27,7 +27,7 @@
 //! and all, and base64 is four bytes for three: [`ceiling`] is what that
 //! leaves for the data.
 //!
-//! A topic is not an artefact anyone claims, so [`Transport::claims`]
+//! A topic is not an artifact anyone claims, so [`Transport::claims`]
 //! answers `None`. The origin URI is the event's source — the topic
 //! endpoint it was published to — with the event id as its fragment. A
 //! send target is a topic endpoint URL, or empty for this transport's own.
