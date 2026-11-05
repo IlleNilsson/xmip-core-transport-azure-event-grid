@@ -16,7 +16,7 @@
 //! envelope.rs   a Stream as one `WireEvent`, and the ceilings an event keeps
 //! client.rs     Xmip's side: publish
 //! webhook.rs    the endpoint a subscription delivers to, and what it delivers
-//! session.rs    the far end a test or the playground runs on loopback
+//! session.rs    the far end a test or the essentials runs on loopback
 //! ```
 //!
 //! The endpoint, the target parser, HTTP itself and the judgment of an
@@ -138,7 +138,7 @@ impl EventGridTransport {
     }
 
     /// A far end that expects this transport's key, for a test or the
-    /// playground to run on loopback.
+    /// essentials to run on loopback.
     #[must_use]
     pub fn session(&self) -> Session {
         let session = Session::new(&self.key);
@@ -595,7 +595,7 @@ mod tests {
         assert!(grid.refuses(&[0xff]).is_none());
     }
 
-    /// The Playground's edge payloads, written here so the crate does not
+    /// The Essentials' edge payloads, written here so the crate does not
     /// depend on it, and one at the brim.
     fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
         vec![

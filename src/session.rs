@@ -1,5 +1,5 @@
 //! The far end: enough of Event Grid to take one Location's events and
-//! deliver them, and what a test or the playground puts on loopback.
+//! deliver them, and what a test or the essentials puts on loopback.
 //!
 //! Not Event Grid. One session stands as a topic: it checks every publish
 //! for one key, reads the `WireEvent` or the batch, holds what was
