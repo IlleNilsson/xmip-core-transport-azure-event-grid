@@ -382,6 +382,7 @@ impl Loopback for EventGridTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn node(topic_url: &str, key: &str) -> EventGridTransport {
         EventGridTransport::new(topic_url)
@@ -515,9 +516,7 @@ mod tests {
         assert!(arrived[0].origin_uri.starts_with(&format!("{topic}#")));
         let published = far_end.join().expect("thread");
         let origin = &arrived[0].origin_uri;
-        assert!(
-            matches!(published, Event::Published(event) if envelope::origin(&event) == *origin)
-        );
+        assert_matches!(published, Event::Published(event) if envelope::origin(&event) == *origin);
     }
 
     #[test]
