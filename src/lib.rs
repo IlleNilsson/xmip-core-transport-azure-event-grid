@@ -170,13 +170,9 @@ impl EventGridTransport {
     }
 
     /// The topic a target names, or this transport's own where it names
-    /// none.
+    /// none (`transport::destination::named`).
     fn resolve<'a>(&'a self, target: &'a str) -> &'a str {
-        if target.is_empty() {
-            &self.topic_url
-        } else {
-            target
-        }
+        transport::destination::named(target).unwrap_or(&self.topic_url)
     }
 }
 
