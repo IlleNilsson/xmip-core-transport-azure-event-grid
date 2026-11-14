@@ -163,6 +163,7 @@ pub fn hear(request: &Request) -> Heard<Result<Delivery>> {
         (Ok(Delivery::Events(events)), _) if !events.is_empty() => {
             Heard::Waiting(Ok(Delivery::Events(events)))
         }
+        (Err(why), response) => Heard::Refused(why, response),
         (delivery, response) => Heard::Answered(delivery, response),
     }
 }
