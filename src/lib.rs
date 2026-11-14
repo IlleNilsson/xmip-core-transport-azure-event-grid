@@ -303,6 +303,12 @@ impl Configured for EventGridTransport {
             None => transport,
         })
     }
+
+    /// Each caller's turn on the webhook's listener taking at most `turn`.
+    fn turning_within(mut self, turn: Duration) -> Self {
+        self.inbound = self.inbound.turning_within(turn);
+        self
+    }
 }
 
 impl EventGridTransport {
