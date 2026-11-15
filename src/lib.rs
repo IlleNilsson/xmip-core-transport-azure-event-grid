@@ -119,13 +119,6 @@ impl EventGridTransport {
         self
     }
 
-    /// Give up on an endpoint that stops answering after `timeout`.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// The client this transport publishes through.
     #[must_use]
     pub fn client(&self) -> Client {
@@ -278,19 +271,21 @@ impl Configured for EventGridTransport {
                           the subscription's webhook URL resolves to.",
                 applies: Applies::Receive,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long an endpoint that stops answering is waited on; unbounded \
-                          when left out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long an endpoint that stops answering is waited on; unbounded \
+                 when left out.",
+            ),
         ],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["azure-event-grid"];
+
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         // The topic key comes through the Location's credentials.
@@ -298,10 +293,7 @@ impl Configured for EventGridTransport {
         if let Some(listen) = settings.optional_text("listen") {
             transport = transport.listening_at(listen);
         }
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
+        Ok(transport)
     }
 
     /// Each caller's turn on the webhook's listener taking at most `turn`.
