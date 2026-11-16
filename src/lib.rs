@@ -156,7 +156,8 @@ impl EventGridTransport {
     /// # Errors
     /// Where the connection failed or the delivery was not one.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Taken>> {
-        Ok(carried(webhook::accept_one(listener, self.timeout)?)
+        let clock = std::sync::Arc::clone(self.connections.clock());
+        Ok(carried(webhook::accept_one(listener, self.timeout, clock)?)
             .into_iter()
             .map(|(origin, data)| Taken::new(origin, data))
             .collect())
