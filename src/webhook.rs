@@ -13,6 +13,7 @@
 //! — so the two cannot drift.
 
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -26,6 +27,7 @@ use http::inbound::Heard;
 use http::server;
 use net::Endpoint;
 use net::http::{Request, Response};
+use xcore::Clock;
 
 /// What Event Grid delivered.
 #[derive(Clone, Debug, PartialEq)]
@@ -134,13 +136,18 @@ pub fn push(webhook_url: &str, request: Request, timeout: Option<Duration>) -> R
     })
 }
 
-/// Accept one delivery on `listener`, answer it, and say what it was.
+/// Accept one delivery on `listener`, answer it, and say what it was, its
+/// HTTP/2 frames in a span counted on `clock`.
 ///
 /// # Errors
 /// Where the connection could not be accepted, broke, or did not carry a
 /// delivery — which is answered 400 before the error is returned.
-pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<Delivery> {
-    server::serve_one(listener, timeout, answer)?
+pub fn accept_one(
+    listener: &TcpListener,
+    timeout: Option<Duration>,
+    clock: Arc<dyn Clock>,
+) -> Result<Delivery> {
+    server::serve_one(listener, timeout, clock, answer)?
 }
 
 /// What one delivery earns: what it was and the answer it asks for, or
@@ -237,8 +244,8 @@ mod tests {
         let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
         let timeout = Some(Duration::from_secs(2));
         let webhook = std::thread::spawn(move || {
-            let first = accept_one(&listener, timeout);
-            let second = accept_one(&listener, timeout);
+            let first = accept_one(&listener, timeout, Arc::new(xcore::SystemClock));
+            let second = accept_one(&listener, timeout, Arc::new(xcore::SystemClock));
             (first, second)
         });
         let url = format!("http://{address}/hook");

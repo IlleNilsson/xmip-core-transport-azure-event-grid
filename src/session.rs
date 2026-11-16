@@ -67,7 +67,12 @@ impl Session {
     /// # Errors
     /// Where the connection could not be accepted, broke, or sent nothing.
     pub fn serve_one(&mut self, listener: &TcpListener) -> Result<Event> {
-        server::serve_one(listener, self.timeout, |request| self.answer(request))
+        // A far end holds no Clock: its one request counts on the
+        // operating system's.
+        let clock = std::sync::Arc::new(xcore::SystemClock);
+        server::serve_one(listener, self.timeout, clock, |request| {
+            self.answer(request)
+        })
     }
 
     /// Open with the handshake at the webhook at `webhook_url`, as Event
