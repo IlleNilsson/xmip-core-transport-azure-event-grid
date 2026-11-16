@@ -208,7 +208,7 @@ impl Transport for EventGridTransport {
 
     /// One delivery: the events it carried, or nothing where it was the
     /// handshake, now answered. Taken from whichever connection Event Grid
-    /// posts on first, on the listener the first receive bound and kept.
+    /// posts on first, on the listener its open bound and kept.
     ///
     /// Event Grid waits for its answer to a delivery of events until every
     /// one has its verdict (`batch::status`): `200` where all were
@@ -217,14 +217,10 @@ impl Transport for EventGridTransport {
     /// `400`, which Event Grid does not retry. The handshake is answered at
     /// once.
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let (delivery, reply) = self.inbound.next(
-            || self.bind(),
-            self.timeout,
-            |request, peer| {
-                let sender = server::Sender::of(&request, peer);
-                webhook::hear(&request).map(|delivery| (delivery, sender))
-            },
-        )?;
+        let (delivery, reply) = self.inbound.next(self.timeout, |request, peer| {
+            let sender = server::Sender::of(&request, peer);
+            webhook::hear(&request).map(|delivery| (delivery, sender))
+        })?;
         let (delivery, sender) = delivery;
         let carried = carried(delivery?);
         let Some(reply) = reply else {
@@ -309,6 +305,12 @@ impl Configured for EventGridTransport {
         self.inbound = self.inbound.timed_by(clock);
         self.connections = self.connections.timed_by(clock);
         self
+    }
+
+    /// The webhook every receive takes from, bound where a Receive
+    /// Location listens ([`EventGridTransport::bind`]).
+    fn listening(&self) -> Result<Option<&str>> {
+        self.inbound.bound(|| self.bind()).map(Some)
     }
 }
 
