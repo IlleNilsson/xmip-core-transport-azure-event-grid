@@ -25,8 +25,10 @@ use net::http::{Request, Response};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// The client published this event — the first of a batch, where it
-    /// was one.
-    Published(WireEvent),
+    /// was one. Boxed: an event's JSON value is as large as the features
+    /// another crate turns on in `serde_json` make it, and in the estate's
+    /// one workspace that left this variant 264 bytes beside a `String`.
+    Published(Box<WireEvent>),
     /// The client was answered with this error code.
     Refused(String),
 }
@@ -140,7 +142,7 @@ impl Session {
             return refused(400, "BadRequest", "A batch with no events");
         };
         self.events.extend(published);
-        (Event::Published(first), Response::new(200))
+        (Event::Published(Box::new(first)), Response::new(200))
     }
 }
 
@@ -173,10 +175,10 @@ mod tests {
         let written = envelope::json(&event).expect("written");
         let (taken, response) = session.answer(&publish("key", written.to_string().as_bytes()));
         assert_eq!(response.status, 200);
-        assert_eq!(taken, Event::Published(event.clone()));
+        assert_eq!(taken, Event::Published(Box::new(event.clone())));
         let batch = Value::Array(vec![written.clone(), written]).to_string();
         let (taken, _) = session.answer(&publish("key", batch.as_bytes()));
-        assert_eq!(taken, Event::Published(event.clone()));
+        assert_eq!(taken, Event::Published(Box::new(event.clone())));
         assert_eq!(session.events().len(), 3);
         let (taken, response) = session.answer(&publish("wrong", b"{}"));
         assert_eq!(

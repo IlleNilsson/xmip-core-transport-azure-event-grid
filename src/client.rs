@@ -129,7 +129,7 @@ mod tests {
         assert!(!refused.retryable);
         let (session, events) = far_end.join().expect("thread");
         assert_eq!(session.events(), vec![event.clone()]);
-        assert_eq!(events[0], Event::Published(event));
+        assert_eq!(events[0], Event::Published(Box::new(event)));
         assert_eq!(events[1], Event::Refused("Unauthorized".to_string()));
         assert!(
             Client::new("k")
