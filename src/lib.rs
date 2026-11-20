@@ -350,7 +350,7 @@ impl Loopback for EventGridTransport {
         Ok(Box::new(Listening::new(
             move |listener: &TcpListener| {
                 let published = match session.serve_one(listener)? {
-                    Event::Published(event) => event,
+                    Event::Published(event) => *event,
                     Event::Refused(code) => {
                         return Err(protocol_error(format!("the session refused: {code}")));
                     }
