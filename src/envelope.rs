@@ -58,7 +58,7 @@ pub fn json(event: &WireEvent) -> Result<Value> {
 /// where it has none.
 #[must_use]
 pub fn data(event: &WireEvent) -> Vec<u8> {
-    event.data.as_ref().map(Data::bytes).unwrap_or_default()
+    event.data.as_ref().map_or_default(Data::bytes)
 }
 
 /// The event as an origin names it: its source with its id as the
