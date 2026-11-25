@@ -17,6 +17,7 @@
 //! client.rs     Xmip's side: publish
 //! webhook.rs    the endpoint a subscription delivers to, and what it delivers
 //! session.rs    the far end a test or the System Tests run on loopback
+//! loopback.rs   both ends of one exchange on this machine (ADR-0051)
 //! ```
 //!
 //! The endpoint, the target parser, HTTP itself and the judgment of an
@@ -32,13 +33,14 @@
 //! endpoint it was published to — with the event id as its fragment. A
 //! send target is a topic endpoint URL, or empty for this transport's own.
 //!
-//! The transport is its own far end (ADR-0051): [`Loopback`] stands the
+//! The transport is its own far end (ADR-0051): its `Loopback` stands the
 //! session up as the topic, takes the one publish, opens the handshake
 //! with the webhook this transport listens as, and delivers to it.
 
 mod batch;
 pub mod client;
 pub mod envelope;
+mod loopback;
 pub mod session;
 pub mod webhook;
 
@@ -50,14 +52,9 @@ pub use envelope::{ENVELOPE, EVENT_CEILING};
 use http::endpoint::Connections;
 use http::inbound::Inbound;
 use http::server;
-use net::Endpoint;
 use net::ceiling;
 pub use session::{Event, Session};
-use transport::ArrivalIdentity;
-use transport::arrived::next_arrival;
-use transport::error::{Result, protocol_error};
-use transport::listening::Listening;
-use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
+use transport::error::Result;
 use transport::socket;
 use transport::{Arrived, Configured, Directions, Taken, Transport};
 pub use webhook::Delivery;
@@ -71,9 +68,6 @@ pub const fn ceiling() -> usize {
     (EVENT_CEILING - ENVELOPE) / 4 * 3
 }
 
-/// What the loopback pair agrees on: one topic key.
-const LOOPBACK_KEY: &str = "probe";
-
 #[derive(Clone)]
 pub struct EventGridTransport {
     topic_url: String,
@@ -86,6 +80,10 @@ pub struct EventGridTransport {
     /// The webhook's listener a Receive Location keeps, and the
     /// connections Event Grid keeps on it.
     inbound: Inbound,
+    /// The secret a Send Location names, the topic key it publishes with,
+    /// read at each request (ADR-0019, amendment 2026-10-29; ADR-0015,
+    /// amendment 2026-11-25); `key` where it names none.
+    secret: Option<transport::Secured>,
 }
 
 impl EventGridTransport {
@@ -101,6 +99,7 @@ impl EventGridTransport {
             timeout: None,
             connections: Connections::new(),
             inbound: Inbound::new(),
+            secret: None,
         }
     }
 
@@ -119,15 +118,19 @@ impl EventGridTransport {
         self
     }
 
-    /// The client this transport publishes through.
-    #[must_use]
-    pub fn client(&self) -> Client {
-        let client = Client::new(&self.key);
-        let client = client.sharing(self.connections.clone());
-        match self.timeout {
+    /// The client this transport publishes through, presenting the topic
+    /// key the Location's secret holds, read now, or this transport's own
+    /// where it names none.
+    ///
+    /// # Errors
+    /// Where the secret is not set, or is not a password.
+    pub fn client(&self) -> Result<Client> {
+        let key = transport::secured::presented(self.secret.as_ref(), &self.key, self.name())?;
+        let client = Client::new(&key).sharing(self.connections.clone());
+        Ok(match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
             None => client,
-        }
+        })
     }
 
     /// A far end that expects this transport's key, for a test or the
@@ -248,7 +251,7 @@ impl Transport for EventGridTransport {
         ceiling::within(outgoing.len(), ceiling(), "one Event Grid event carries")?;
         let bytes: &[u8] = &outgoing.gather()?;
         let topic_url = self.resolve(target);
-        self.client()
+        self.client()?
             .publish(topic_url, &envelope::stream(topic_url, bytes))
     }
 }
@@ -256,7 +259,9 @@ impl Transport for EventGridTransport {
 impl Configured for EventGridTransport {
     /// The address is the topic endpoint a Send Location publishes to,
     /// `https://<topic>.<region>-1.eventgrid.azure.net/api/events`. The
-    /// topic key is the Location's credentials, not a setting.
+    /// topic key is the Location's `secret`, a password secret the
+    /// Administration Database keeps, never a setting
+    /// ([`Configured::secured_by`]).
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
         settings: &[
@@ -285,7 +290,7 @@ impl Configured for EventGridTransport {
     }
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
-        // The topic key comes through the Location's credentials.
+        // The topic key is the Location's secret (`secured_by`).
         let mut transport = Self::new(address);
         if let Some(listen) = settings.optional_text("listen") {
             transport = transport.listening_at(listen);
@@ -312,80 +317,13 @@ impl Configured for EventGridTransport {
     fn listening(&self) -> Result<Option<&str>> {
         self.inbound.bound(|| self.bind()).map(Some)
     }
-}
 
-impl EventGridTransport {
-    /// Both ends on this machine: the session stands as the topic on an
-    /// ephemeral local port, the webhook listens on another, one key, the
-    /// loopback timeout on every side.
-    #[must_use]
-    pub fn loopback() -> Self {
-        Self::new("http://127.0.0.1:0/api/events")
-            .with_key(LOOPBACK_KEY)
-            .timing_out_after(LOOPBACK_TIMEOUT)
-    }
-}
-
-impl Loopback for EventGridTransport {
-    fn arrival_identity(&self) -> ArrivalIdentity {
-        ArrivalIdentity::Unnamed(
-            "the service pushes it: the request says who the service is, not the publisher",
-        )
-    }
-
-    fn ceiling(&self) -> Option<usize> {
-        Some(ceiling())
-    }
-
-    /// A session listening for its one publish, bound at the topic URL's
-    /// authority — `127.0.0.1:0` for the loopback — and the webhook it then
-    /// validates and delivers to, bound where this transport listens: the
-    /// far end is the topic and the subscription both, so what comes back
-    /// went through the topic and arrived the way a Receive Location takes
-    /// it.
-    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let transport = self.clone();
-        let mut session = self.session();
-        let (webhook, webhook_address) = self.bind()?;
-        Ok(Box::new(Listening::new(
-            move |listener: &TcpListener| {
-                let published = match session.serve_one(listener)? {
-                    Event::Published(event) => *event,
-                    Event::Refused(code) => {
-                        return Err(protocol_error(format!("the session refused: {code}")));
-                    }
-                };
-                let url = format!("http://{webhook_address}/hook");
-                let (delivered, taken) = both_ends(
-                    move || {
-                        let taken = transport.accept_one(&webhook)?;
-                        if taken.is_empty() {
-                            return transport.accept_one(&webhook);
-                        }
-                        Ok(taken)
-                    },
-                    || {
-                        session
-                            .validate(&url)
-                            .and_then(|()| session.deliver(&url, &published))
-                    },
-                    || poke(&webhook_address),
-                );
-                delivered?;
-                next_arrival(taken?, "delivered, but the webhook took nothing")
-            },
-            socket::bind_tcp(&Endpoint::parse(&self.topic_url)?.address())?,
-        )))
-    }
-
-    /// Publish the payload as one event, from a fresh near end presenting
-    /// this transport's key, to the topic on `address`.
-    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
-        let near = Self {
-            topic_url: format!("http://{address}/api/events"),
-            ..self.clone()
-        };
-        near.send("", payload)
+    /// The topic key the Location's secret holds, presented in
+    /// `aeg-sas-key` with each publish. A Receive Location presents
+    /// nothing: it is the webhook Event Grid connects to.
+    fn secured_by(mut self, secret: transport::Secured) -> Result<Self> {
+        self.secret = Some(secret);
+        Ok(self)
     }
 }
 
@@ -393,6 +331,7 @@ impl Loopback for EventGridTransport {
 mod tests {
     use super::*;
     use std::assert_matches;
+    use transport::loopback::Loopback;
 
     fn node(topic_url: &str, key: &str) -> EventGridTransport {
         EventGridTransport::new(topic_url)
@@ -413,7 +352,7 @@ mod tests {
             .expect("built");
         assert_eq!(sent.topic_url, topic);
         assert_eq!(sent.timeout, Some(Duration::from_secs(5)));
-        assert!(sent.key.is_empty(), "the key is the credentials'");
+        assert!(sent.key.is_empty(), "the key is the Location's secret");
         let received =
             EventGridTransport::open(topic, Applies::Receive, &[text("listen", "0.0.0.0:8443")])
                 .expect("built");
@@ -542,6 +481,33 @@ mod tests {
         assert_eq!(
             far_end.join().expect("thread"),
             Event::Refused("Unauthorized".to_string())
+        );
+    }
+
+    #[test]
+    fn a_location_presents_the_topic_key_its_secret_holds() {
+        use transport::secured::Kept;
+        let drawn = Kept::drawn();
+        let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
+        let mut session = node("http://x/api/events", &drawn).session();
+        let far_end = std::thread::spawn(move || session.serve_one(&listener).expect("served"));
+        let topic = format!("http://{address}/api/events");
+        let kept = std::sync::Arc::new(Kept::default());
+        let near = EventGridTransport::open(&topic, Applies::Send, &[])
+            .expect("built")
+            .timing_out_after(Duration::from_secs(2))
+            .secured_by(kept.secured("partner-x.grid"))
+            .expect("Event Grid presents the topic key");
+        let unset = near.send("", b"x").expect_err("not set yet");
+        assert!(
+            unset.retryable && unset.message.contains("is not set"),
+            "{unset}"
+        );
+        kept.set("partner-x.grid", xcore::SecretKind::Password, &drawn);
+        near.send("", b"keyed").expect("presented the secret");
+        assert_matches!(
+            far_end.join().expect("thread"),
+            Event::Published(event) if envelope::data(&event) == b"keyed"
         );
     }
 

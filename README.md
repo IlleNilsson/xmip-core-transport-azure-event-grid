@@ -2,6 +2,8 @@
 
 Azure Event Grid transport: a topic key over the REST API — publish a Stream as one wire event to a topic, receive as the webhook a subscription delivers to, answering the validation handshake — a topic endpoint is a Location. A technology of [xmip-core-transport](https://github.com/IlleNilsson/xmip-core-transport).
 
+A Send Location publishes with the topic key its `secret = "<name>"` names: a `password` secret kept in the Administration Database and never in configuration, sent in `aeg-sas-key` and read at each publish, so a key set again reaches the next publish without a restart (ADR-0019, amendment 2026-10-29; ADR-0015, amendment 2026-11-25). A Receive Location presents nothing: it is the webhook Event Grid connects to.
+
 ## The WireEvent is the event capability's
 
 The event a Stream travels in is
