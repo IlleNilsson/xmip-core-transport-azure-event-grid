@@ -36,38 +36,63 @@
 //! The transport is its own far end (ADR-0051): its `Loopback` stands the
 //! session up as the topic, takes the one publish, opens the handshake
 //! with the webhook this transport listens as, and delivers to it.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 mod batch;
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod envelope;
+#[cfg(feature = "default")]
 mod loopback;
+#[cfg(feature = "default")]
 pub mod session;
+#[cfg(feature = "default")]
 pub mod webhook;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use client::{API_VERSION, Client, KEY_HEADER};
+#[cfg(feature = "default")]
 pub use envelope::{ENVELOPE, EVENT_CEILING};
-use http::endpoint::Connections;
-use http::inbound::Inbound;
-use http::server;
+#[cfg(feature = "default")]
+use http::{endpoint::Connections, inbound::Inbound, server};
+#[cfg(feature = "default")]
 use net::ceiling;
+#[cfg(feature = "default")]
 pub use session::{Event, Session};
+#[cfg(feature = "default")]
 use transport::error::Result;
+#[cfg(feature = "default")]
 use transport::socket;
+#[cfg(feature = "default")]
 use transport::{Arrived, Configured, Directions, Taken, Transport};
+#[cfg(feature = "default")]
 pub use webhook::Delivery;
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// The largest Stream one event carries: what a mebibyte leaves for the
 /// data once the envelope has its share and base64 has taken four bytes
 /// for three.
+#[cfg(feature = "default")]
 #[must_use]
 pub const fn ceiling() -> usize {
     (EVENT_CEILING - ENVELOPE) / 4 * 3
 }
 
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct EventGridTransport {
     topic_url: String,
@@ -86,6 +111,7 @@ pub struct EventGridTransport {
     secret: Option<transport::Secured>,
 }
 
+#[cfg(feature = "default")]
 impl EventGridTransport {
     /// Publish to the topic endpoint at `topic_url` — `https://<topic>.
     /// <region>-1.eventgrid.azure.net/api/events` at Azure,
@@ -175,6 +201,7 @@ impl EventGridTransport {
 
 /// What a delivery carries: each event's origin and data; a handshake or
 /// a validation, answered, as nothing yet.
+#[cfg(feature = "default")]
 fn carried(delivery: Delivery) -> Vec<(String, Vec<u8>)> {
     match delivery {
         Delivery::Events(events) => events
@@ -185,6 +212,7 @@ fn carried(delivery: Delivery) -> Vec<(String, Vec<u8>)> {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for EventGridTransport {
     fn name(&self) -> &'static str {
         "azure-event-grid"
@@ -256,34 +284,10 @@ impl Transport for EventGridTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for EventGridTransport {
-    /// The address is the topic endpoint a Send Location publishes to,
-    /// `https://<topic>.<region>-1.eventgrid.azure.net/api/events`. The
-    /// topic key is the Location's `secret`, a password secret the
-    /// Administration Database keeps, never a setting
-    /// ([`Configured::secured_by`]).
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "listen",
-                kind: Kind::Address,
-                presence: Presence::Required,
-                meaning: "Where a Receive Location listens for deliveries: the host and port \
-                          the subscription's webhook URL resolves to.",
-                applies: Applies::Receive,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long an endpoint that stops answering is waited on; unbounded \
-                 when left out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["azure-event-grid"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.timeout)
@@ -332,6 +336,7 @@ mod tests {
     use super::*;
     use std::assert_matches;
     use transport::loopback::Loopback;
+    use xcore::settings::Applies;
 
     fn node(topic_url: &str, key: &str) -> EventGridTransport {
         EventGridTransport::new(topic_url)

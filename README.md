@@ -25,6 +25,10 @@ A Receive Location keeps its listener, bound as its transport is opened (`Config
 
 Event Grid waits on its connection for the answer to a delivery until the runtime's whole receive cycle has ended for every event in it (runtime-model section 5): `200` where every event was accepted; `503` where any failed, and Event Grid delivers the whole batch again by its retry policy — events of it already accepted arrive twice, at-least-once and never a loss; otherwise, where any was refused, `401` (a sender not identified) or `400`, the statuses Event Grid does not retry for a webhook (its `403` and `422` it would), so the batch is not delivered again: its accepted events are Xmip's and its refused ones refused for good (`batch::status`). The validation handshake and the subscription validation are answered at once. No round trip is added: the answer is the one Event Grid always waited for, only later.
 
+## The declaration
+
+What a Location of this technology is configured with is two `const`s in its `declaration` module, `src/declaration.rs`, beside the code, which `Configured` reads (ADR-0064, amendment 2026-11-26): `declaration::SETTINGS`, `listen` and `timeout`, and `SCHEMES`, `azure-event-grid`. Built with its `declaration` feature alone (`--no-default-features --features declaration`), the crate is those and nothing more: its code and every crate the code is built on — the event capability's `WireEvent`, the http technology, and with it TLS — are behind the default feature, and `tls`, which is code, turns the default on with it. So the library the surfaces load can carry it without the code, for the language server and the desktop to suggest and check an Event Grid Location's settings though no node in their process loaded the technology, once the gathering crate of open problem 48 links it. `test/Declaration.Test.ps1` in the estate holds that the declaration builds nothing the transport capability does not.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
