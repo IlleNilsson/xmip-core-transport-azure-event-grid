@@ -1,11 +1,11 @@
 [package]
 name = "xmip-core-transport-azure-event-grid"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 repository = "https://github.com/IlleNilsson/xmip-core-transport-azure-event-grid"
 description = "Azure Event Grid transport: a topic key over the REST API — publish a Stream as one wire event to a topic, receive as the webhook a subscription delivers to, answering the validation handshake — a topic endpoint is a Location. A xmip-core-transport technology."
-publish = false
+publish.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -50,13 +50,5 @@ declaration = []
 # HTTPS endpoints: the http technology's `tls`, off by default as there.
 tls = ["default", "http/tls"]
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-too_many_lines = "warn"
-pedantic = { level = "warn", priority = -1 }
-missing_errors_doc = "warn"
-missing_panics_doc = "warn"
-unwrap_used = "warn"
-expect_used = "allow"
+[lints]
+workspace = true
